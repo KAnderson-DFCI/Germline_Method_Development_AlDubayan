@@ -1,0 +1,2 @@
+python3 ./scripts/interval_list_toBed.py ./old_cap/whole_exome_agilent_1.1_refseq_plus_3_boosters.Homo_sapiens_assembly19.targets.interval_list ./old_cap/old_cap_hg19.bed
+liftOver ./old_cap/old_cap_hg19.bed hg19ToHg38.over.chain ./old_cap/old_cap_hg38.bed ./old_cap/old_cap_unlifted.bed

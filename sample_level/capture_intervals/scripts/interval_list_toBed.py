@@ -18,5 +18,5 @@ with open(ilf, 'r') as inp,\
     n, start, end, *_ = line.strip().split()
     n = 'chr' + n
     s = str(int(start)-1)
-    e = str(int(end)-1)
+    e = str(int(end))
     out.write('\t'.join([n,s,e]) + '\n')
