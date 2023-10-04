@@ -1,0 +1,3 @@
+SureSelectv4	http://hgdownload.soe.ucsc.edu/gbdb/hg19/exomeProbesets/S03723314_Regions.bb
+NexteraRC	http://hgdownload.soe.ucsc.edu/gbdb/hg19/exomeProbesets/nexterarapidcapture_exome_targetedregions.bb
+SeqCapv3	http://hgdownload.soe.ucsc.edu/gbdb/hg19/exomeProbesets/sorted_SeqCap_EZ_Exome_v3_hg19_primary_targets.bb

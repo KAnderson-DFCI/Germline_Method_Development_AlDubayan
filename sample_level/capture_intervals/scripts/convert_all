@@ -1,0 +1,5 @@
+#!/bin/bash
+
+for brand in SeqCap nextera SureSelectv4; do
+  ./convert_interval ${brand}_targets.bed
+done
