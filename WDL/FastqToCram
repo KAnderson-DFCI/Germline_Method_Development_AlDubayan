@@ -1,0 +1,662 @@
+version 1.0
+
+# import GATK pre-processing workflow
+import "https://raw.githubusercontent.com/gatk-workflows/gatk4-data-processing/master/processing-for-variant-discovery-gatk4.wdl" as GATK
+
+workflow FastqToCram {
+  input {
+    String sample_name
+    File fastq_1
+    File fastq_2
+    Array[File] fastq_singles = []
+    Boolean clean_fastqs = false
+    Int n_fastq_shards = 1
+    Boolean cram_out = true
+
+    String reference_name
+    File reference_fasta
+    File reference_fasta_index
+    File reference_dict
+    File? reference_alt
+    File reference_sa 
+    File reference_ann
+    File reference_bwt
+    File reference_pac
+    File reference_amb
+    File dbSNP_vcf
+    File dbSNP_vcf_index
+    Array[File] known_indels_sites_VCFs
+    Array[File] known_indels_sites_indices
+
+    String fastq_pair_docker = "vanallenlab/fastq-pair:latest"
+    String fastqsplitter_docker = "vanallenlab/fastqsplitter:latest"
+    String gotc_docker = "us.gcr.io/broad-gotc-prod/genomes-in-the-cloud:2.4.7-1603303710"
+    String gatk_docker = "broadinstitute/gatk:latest"
+    String gatk_path = "/gatk/gatk"
+    String python_docker = "python:2.7"
+    
+    Float? bwa_mem_gb
+    Int? bwa_num_cpu
+    Int? bwa_disk_size
+  }
+
+  # Clean up FASTQs with fastq-pair
+  if ( clean_fastqs ) {
+    call CleanFastqs {
+      input:
+        fastq_1 = fastq_1,
+        fastq_2 = fastq_2,
+        docker = fastq_pair_docker
+    }
+  }
+  File fq1 = select_first([CleanFastqs.fq_paired_1, fastq_1])
+  File fq2 = select_first([CleanFastqs.fq_paired_2, fastq_2])
+  Array[File] fq_singles = flatten([fastq_singles, select_first([CleanFastqs.fq_singles, []])])
+
+  # Split paired fastqs to parallelize alignment
+  if ( n_fastq_shards > 1 ) {
+    call SplitFastq as SplitFq1 {
+      input:
+        fastq = fq1,
+        n_shards = n_fastq_shards,
+        docker = fastqsplitter_docker
+    }
+    call SplitFastq as SplitFq2 {
+      input:
+        fastq = fq2,
+        n_shards = n_fastq_shards,
+        docker = fastqsplitter_docker
+    }
+  }
+  Array[File] sharded_fq1 = select_first([SplitFq1.fq_shards, [fq1]])
+  Array[File] sharded_fq2 = select_first([SplitFq2.fq_shards, [fq2]])
+  Array[Pair[File, File]] sharded_fq_pairs = zip(sharded_fq1, sharded_fq2)
+
+  # Align paired fastqs with BWA
+  scatter ( fq_pair in sharded_fq_pairs ) {
+    call Bwa as AlignPairs {
+      input:
+        input_fastqs = [fq_pair.left, fq_pair.right],
+        output_basename = sample_name + "." + basename(fq_pair.left, ".fq.gz"),
+        ref_fasta = reference_fasta,
+        ref_fasta_index = reference_fasta_index,
+        ref_dict = reference_dict,
+        ref_alt = reference_alt,
+        ref_amb = reference_amb,
+        ref_ann = reference_ann,
+        ref_bwt = reference_bwt,
+        ref_pac = reference_pac,
+        ref_sa = reference_sa,
+        mem_gb = bwa_mem_gb,
+        num_cpu = bwa_num_cpu,
+        disk_size = bwa_disk_size,
+        docker = gotc_docker
+    }
+  }
+
+  scatter ( fastq in fq_singles ) {
+    call Bwa as AlignSingles {
+      input:
+        input_fastqs = [fastq],
+        output_basename = sample_name,
+        ref_fasta = reference_fasta,
+        ref_fasta_index = reference_fasta_index,
+        ref_dict = reference_dict,
+        ref_alt = reference_alt,
+        ref_amb = reference_amb,
+        ref_ann = reference_ann,
+        ref_bwt = reference_bwt,
+        ref_pac = reference_pac,
+        ref_sa = reference_sa,
+        mem_gb = bwa_mem_gb,
+        num_cpu = bwa_num_cpu,
+        disk_size = bwa_disk_size,
+        docker = gotc_docker
+    }
+  }
+
+  # Merge BAMs, mark duplicates
+  Array[File] bams_for_gatk = flatten([AlignPairs.output_bam, AlignSingles.output_bam])
+  call GATK.MarkDuplicates {
+    input:
+      input_bams = bams_for_gatk,
+      output_bam_basename = sample_name + ".aligned.unsorted.duplicates_marked",
+      metrics_filename = sample_name + ".duplicate_metrics",
+      docker_image = gatk_docker,
+      gatk_path = gatk_path,
+      disk_size = ceil(3 * size(bams_for_gatk, "GB")) + 10,
+      compression_level = 2,
+      preemptible_tries = 5
+  }
+
+  # Sort deduped BAM file and fix tags
+  call SortAndFixTags {
+    input:
+      input_bam = MarkDuplicates.output_bam,
+      output_bam_basename = sample_name + ".aligned.duplicate_marked.sorted",
+      ref_dict = reference_dict,
+      ref_fasta = reference_fasta,
+      ref_fasta_index = reference_fasta_index,
+      docker_image = gatk_docker,
+      gatk_path = gatk_path,
+      disk_size = ceil(4 * size(MarkDuplicates.output_bam, "GB")) + 10,
+      preemptible_tries = 5,
+      compression_level = 2
+  }
+
+  # Add RG tag (required for BaseRecalibrator)
+  call AddRg {
+    input:
+      bam = SortAndFixTags.output_bam,
+      bam_index = SortAndFixTags.output_bam_index,
+      sample_name = sample_name,
+      gatk_path = gatk_path,
+      docker = gatk_docker
+  }
+
+  # Create list of sequences for scatter-gather parallelization 
+  call GATK.CreateSequenceGroupingTSV {
+    input:
+      ref_dict = reference_dict,
+      docker_image = python_docker,
+      preemptible_tries = 5
+  }
+  Int n_bqsr_splits = length(CreateSequenceGroupingTSV.sequence_grouping)
+  Int n_bqsr_plus_unmapped_splits = length(CreateSequenceGroupingTSV.sequence_grouping_with_unmapped)
+  
+  # Perform Base Quality Score Recalibration (BQSR) on the sorted BAM in parallel
+  scatter ( subgroup in CreateSequenceGroupingTSV.sequence_grouping ) {
+    # Generate the recalibration model by interval
+    call StreamedBaseRecalibrator {
+      input:
+        input_bam = AddRg.bam_wRG,
+        input_bam_index = AddRg.bam_wRG_idx,
+        recalibration_report_filename = sample_name + ".recal_data.csv",
+        sequence_group_interval = subgroup,
+        dbSNP_vcf = dbSNP_vcf,
+        dbSNP_vcf_index = dbSNP_vcf_index,
+        known_indels_sites_VCFs = known_indels_sites_VCFs,
+        known_indels_sites_indices = known_indels_sites_indices,
+        ref_dict = reference_dict,
+        ref_fasta = reference_fasta,
+        ref_fasta_index = reference_fasta_index,
+        docker_image = gatk_docker,
+        gatk_path = gatk_path,
+        disk_size = ceil(3 * size(AddRg.bam_wRG, "GB") / n_bqsr_splits) + 20,
+        preemptible_tries = 5
+    }  
+  }  
+  
+  # Merge the recalibration reports resulting from by-interval recalibration
+  call GATK.GatherBqsrReports {
+    input:
+      input_bqsr_reports = StreamedBaseRecalibrator.recalibration_report,
+      output_report_filename = sample_name + ".recal_data.csv",
+      docker_image = gatk_docker,
+      gatk_path = gatk_path,
+      disk_size = 100,
+      preemptible_tries = 5
+  }
+
+  # Apply the BQSR model by interval
+  scatter ( subgroup in CreateSequenceGroupingTSV.sequence_grouping_with_unmapped ) {
+    call StreamedApplyBQSR {
+      input:
+        input_bam = AddRg.bam_wRG,
+        input_bam_index = AddRg.bam_wRG_idx,
+        output_bam_basename = sample_name + ".aligned.duplicates_marked.recalibrated",
+        recalibration_report = GatherBqsrReports.output_bqsr_report,
+        sequence_group_interval = subgroup,
+        ref_dict = reference_dict,
+        ref_fasta = reference_fasta,
+        ref_fasta_index = reference_fasta_index,
+        docker_image = gatk_docker,
+        gatk_path = gatk_path,
+        disk_size = ceil(3 * size(AddRg.bam_wRG, "GB") / n_bqsr_plus_unmapped_splits) + 20,
+        preemptible_tries = 5
+    }
+  } 
+
+  # Merge the recalibrated BAM files resulting from by-interval recalibration
+  call GATK.GatherBamFiles {
+    input:
+      input_bams = StreamedApplyBQSR.recalibrated_bam,
+      output_bam_basename = sample_name,
+      docker_image = gatk_docker,
+      gatk_path = gatk_path,
+      disk_size = ceil(3 * size(AddRg.bam_wRG, "GB")) + 10,
+      preemptible_tries = 5,
+      compression_level = 2
+  }
+
+  if ( cram_out ) {
+    call Bam2Cram {
+      input:
+        bam = GatherBamFiles.output_bam,
+        bai = GatherBamFiles.output_bam_index,
+        ref_fa = reference_fasta,
+        ref_fai = reference_fasta_index,
+        docker = gatk_docker
+    }
+  }
+
+  # Outputs that will be retained when execution is complete  
+  output {
+    File duplication_metrics = MarkDuplicates.duplicate_metrics
+    File bqsr_report = GatherBqsrReports.output_bqsr_report
+    File cram_or_bam = select_first([Bam2Cram.cram, GatherBamFiles.output_bam])
+    File cram_or_bam_index = select_first([Bam2Cram.crai, GatherBamFiles.output_bam_index])
+  } 
+}
+
+# Clean up FASTQs with fastq-pair
+task CleanFastqs {
+  input {
+    File fastq_1
+    File fastq_2
+    String docker
+    Int reads_per_hash_cell = 8
+    Int disk_scaling_factor = 6
+    Float mem_gb = 64
+  }
+  Int disk_gb_base = ceil(3 * size([fastq_1, fastq_2], "GB"))
+  Int disk_gb = (disk_scaling_factor * disk_gb_base) + 10
+
+  String f1_basename = sub(basename(fastq_1),"\.f.*q.*","")
+  String f2_basename = sub(basename(fastq_2),"\.f.*q.*","")
+
+  command <<<
+    set -eu -o pipefail
+
+    # Check whether fastqs are gzipped and uncompress if necessary
+    if [ $( file ~{fastq_1} | fgrep gzip | wc -l ) -gt 0 ]; then
+      zcat ~{fastq_1} > ~{f1_basename}.fastq
+    else
+      mv ~{fastq_1} > ~{f1_basename}.fastq
+    fi
+    if [ $( file ~{fastq_2} | fgrep gzip | wc -l ) -gt 0 ]; then
+      zcat ~{fastq_2} > ~{f2_basename}.fastq
+    else
+      mv ~{fastq_2} > ~{f2_basename}.fastq
+    fi
+
+    # Get number of reads
+    n_reads=$( cat ~{f1_basename}.fastq | wc -l | awk '{ print $1 / 4 }' | cut -f1 -d\. )
+    echo -e "\nCounted $n_reads total reads\n"
+
+    # Set hash size to n_reads / reads_per_hash_cell
+    hash_size=$( echo $n_reads | awk -v denom=~{reads_per_hash_cell} '{ printf "%.0f\n", $1 / denom }' | cut -f1 -d\. )
+    echo -e "\nSetting hash size to $hash_size\n"
+
+    fastq_pair -p -t $hash_size \
+      ~{f1_basename}.fastq \
+      ~{f2_basename}.fastq
+    for out in paired single; do
+      gzip -f ~{f1_basename}_$out.fq
+      gzip -f ~{f2_basename}_$out.fq
+    done
+  >>>
+
+  output {
+    File fq_paired_1 = "~{f1_basename}_paired.fq.gz"
+    File fq_paired_2 = "~{f2_basename}_paired.fq.gz"
+    Array[File] fq_singles = ["~{f1_basename}_single.fq.gz",
+                              "~{f2_basename}_single.fq.gz"]
+  }
+
+  runtime {
+    docker: docker
+    memory: mem_gb + " GB"
+    cpu: 4
+    disks: "local-disk " + disk_gb + " HDD"
+    preemptible: 3
+  }
+}
+
+# Evenly divide paired fastqs to parallelize alignment
+task SplitFastq {
+  input {
+    File fastq
+    Int n_shards
+    String docker
+  }
+
+  Int disk_gb = ceil(size(fastq, "GB") * 3) + 10
+  String out_prefix = basename(fastq, ".fq.gz")
+
+  command <<<
+    set -eu -o pipefail
+
+    # Build fastqsplitter command
+    cmd="fastqsplitter -i ~{fastq}"
+    for i in $( seq 1 ~{n_shards} ); do
+      cmd="$cmd -o ~{out_prefix}.$i.fq.gz"
+    done
+
+    # Split fastqs
+    echo -e "Now splitting fastqs with the following command:\n$cmd\n"
+    eval $cmd
+  >>>
+
+  output {
+    Array[File] fq_shards = glob("~{out_prefix}.*.fq.gz")
+  }
+
+  runtime {
+    docker: docker
+    memory: "3.5GB"
+    cpu: 2
+    disks: "local-disk " + disk_gb + " HDD"
+    preemptible: 3
+  }
+}
+
+# Align single or paired fastqs with BWA MEM
+task Bwa {
+  input {
+    Array[File] input_fastqs
+    String output_basename
+    File ref_fasta
+    File ref_fasta_index
+    File ref_dict
+    File? ref_alt
+    File ref_amb
+    File ref_ann
+    File ref_bwt
+    File ref_pac
+    File ref_sa
+
+    Float mem_gb = 32
+    String num_cpu = 8
+
+    Int preemptible_tries = 3
+    Int? disk_size
+
+    String docker
+  }
+
+  Int default_disk_size = ceil(3 * size(input_fastqs, "GB")) + 10
+
+  command <<<
+    set -eu -o pipefail
+
+    # Align fastq(s) with bwa
+    /usr/gitc/bwa mem -v 3 -t ~{num_cpu} -Y \
+      ~{ref_fasta} \
+      ~{sep=" " input_fastqs} \
+    | samtools view -b --output-fmt-option level=2 - \
+    > ~{output_basename}.bam
+  >>>
+  
+  output {
+    File output_bam = "~{output_basename}.bam"
+  }
+
+  runtime {
+    preemptible: preemptible_tries
+    docker: docker
+    memory: "~{mem_gb} GiB"
+    cpu: num_cpu
+    disks: "local-disk " + select_first([disk_size, default_disk_size]) + " HDD"
+  }
+}
+
+# Add a read group tag to an aligned BAM
+task AddRg {
+  input {
+    File bam
+    File bam_index
+    String sample_name
+    String gatk_path
+    String docker
+  }
+
+  String out_filename = basename(bam, ".bam") + ".wRG.bam"
+  Int disk_gb = ceil(3 * size(bam, "GB")) + 10
+
+  command {
+    set -eu -o pipefail
+
+    ~{gatk_path} \
+      AddOrReplaceReadGroups \
+      I=~{bam} \
+      O=~{out_filename} \
+      RGID=1 \
+      RGLB=lib1 \
+      RGPL=ILLUMINA \
+      RGPU=unit1 \
+      RGSM=~{sample_name}
+
+    samtools index ~{out_filename}
+  }
+
+  output {
+    File bam_wRG = "~{out_filename}"
+    File bam_wRG_idx = "~{out_filename}.bai"
+  }
+
+  runtime {
+    preemptible: 5
+    docker: docker
+    memory: "3.5 GiB"
+    cpu: 2
+    disks: "local-disk " + disk_gb + " HDD"
+  }
+}
+
+# Sort BAM file by coordinate order and fix tag values for NM and UQ
+# Note: taken from GATK-4 WDL but modified to use samtools sort
+task SortAndFixTags {
+  input {
+    File input_bam
+    String output_bam_basename
+    File ref_dict
+    File ref_fasta
+    File ref_fasta_index
+  
+    Int compression_level
+    Int preemptible_tries
+    Int disk_size
+    Int sort_mem_gb = 4
+    Int sort_cpu = 4
+    Int fix_tags_mem_gb = 2
+
+    String docker_image
+    String gatk_path
+  }
+  Int sort_extra_threads = sort_cpu - 1
+  Int total_mem_gb = sort_mem_gb + fix_tags_mem_gb + 2
+
+  command {
+    set -o pipefail
+
+    samtools sort \
+      -l 1 -O bam -@ ~{sort_extra_threads} \
+      ~{input_bam} \
+    | ~{gatk_path} \
+      --java-options "-Dsamjdk.compression_level=~{compression_level} -Xms~{fix_tags_mem_gb}G" \
+      SetNmMdAndUqTags \
+      --INPUT /dev/stdin \
+      --OUTPUT ~{output_bam_basename}.bam \
+      --CREATE_INDEX true \
+      --CREATE_MD5_FILE true \
+      --REFERENCE_SEQUENCE ~{ref_fasta}
+  }
+  runtime {
+    preemptible: preemptible_tries
+    docker: docker_image
+    memory: "~{total_mem_gb} GiB"
+    cpu: sort_cpu
+    disks: "local-disk " + disk_size + " HDD"
+  }
+  output {
+    File output_bam = "~{output_bam_basename}.bam"
+    File output_bam_index = "~{output_bam_basename}.bai"
+    File output_bam_md5 = "~{output_bam_basename}.bam.md5"
+  }
+}
+
+# Generate Base Quality Score Recalibration (BQSR) model
+# Note: taken from GATK-4 WDL but modified to stream intervals of interest
+# from a google bucket rather than localizing the entire BAM to save on disk
+task StreamedBaseRecalibrator {
+  input {
+    File input_bam
+    File input_bam_index
+    String recalibration_report_filename
+    Array[String] sequence_group_interval
+    File dbSNP_vcf
+    File dbSNP_vcf_index
+    Array[File] known_indels_sites_VCFs
+    Array[File] known_indels_sites_indices
+    File ref_dict
+    File ref_fasta
+    File ref_fasta_index
+  
+    Int preemptible_tries
+    Int disk_size
+    Float mem_size_gb = 6
+
+    String docker_image
+    String gatk_path
+  }
+  Int command_mem_gb = ceil(mem_size_gb) - 2
+  parameter_meta {
+    input_bam: {
+      localization_optional: true
+    }
+  }
+
+  command { 
+    set -eu -o pipefail
+    
+    ~{gatk_path} --java-options "-Xms~{command_mem_gb}G" \
+      BaseRecalibrator \
+      -R ~{ref_fasta} \
+      -I ~{input_bam} \
+      --use-original-qualities \
+      -O ~{recalibration_report_filename} \
+      --known-sites ~{dbSNP_vcf} \
+      --known-sites ~{sep=" --known-sites " known_indels_sites_VCFs} \
+      -L ~{sep=" -L " sequence_group_interval}
+  }
+  runtime {
+    preemptible: preemptible_tries
+    docker: docker_image
+    memory: "~{mem_size_gb} GiB"
+    disks: "local-disk " + disk_size + " HDD"
+  }
+  output {
+    File recalibration_report = "~{recalibration_report_filename}"
+  }
+}
+
+# Apply Base Quality Score Recalibration (BQSR) model
+# Note: taken from GATK-4 WDL but modified to stream intervals of interest
+# from a google bucket rather than localizing the entire BAM to save on disk
+task StreamedApplyBQSR {
+  input {
+    File input_bam
+    File input_bam_index
+    String output_bam_basename
+    File recalibration_report
+    Array[String] sequence_group_interval
+    File ref_dict
+    File ref_fasta
+    File ref_fasta_index
+
+    Int preemptible_tries
+    Int disk_size 
+    Float mem_size_gb = 4
+
+    String docker_image
+    String gatk_path
+  }
+  Int command_mem_gb = ceil(mem_size_gb) - 1
+  parameter_meta {
+    input_bam: {
+      localization_optional: true
+    }
+  }
+
+  command {
+    set -eu -o pipefail
+
+    ~{gatk_path} --java-options "-Xms~{command_mem_gb}G" \
+      ApplyBQSR \
+      -R ~{ref_fasta} \
+      -I ~{input_bam} \
+      -O ~{output_bam_basename}.bam \
+      -L ~{sep=" -L " sequence_group_interval} \
+      -bqsr ~{recalibration_report} \
+      --static-quantized-quals 10 --static-quantized-quals 20 --static-quantized-quals 30 \
+      --add-output-sam-program-record \
+      --create-output-bam-md5 \
+      --use-original-qualities
+  }
+  runtime {
+    preemptible: preemptible_tries
+    docker: docker_image
+    memory: "~{mem_size_gb} GiB"
+    disks: "local-disk " + disk_size + " HDD"
+  }
+  output {
+    File recalibrated_bam = "~{output_bam_basename}.bam"
+  }
+}
+
+# Convert BAM to CRAM
+task Bam2Cram {
+  input {
+    File bam
+    File bai
+    File ref_fa
+    File ref_fai
+
+    String docker
+  }
+
+  String cram_filename = basename(bam, ".bam") + ".cram"
+
+  Int disk_gb = ceil(3 * size(bam, "GB")) + 10
+
+  command <<<
+    set -euo pipefail
+
+    # log resource usage for debugging purposes
+    function runtimeInfo() {
+      echo [$(date)]
+      echo \* CPU usage: $(top -bn 2 -d 0.01 | grep '^%Cpu' | tail -n 1 | awk '{print $2}')%
+      echo \* Memory usage: $(free -m | grep Mem | awk '{ OFMT="%.0f"; print ($3/$2)*100; }')%
+      echo \* Disk usage: $(df | grep cromwell_root | awk '{ print $5 }')
+    }
+    while true; do
+      runtimeInfo
+      sleep 60s
+    done &
+
+    samtools view \
+      -C \
+      -T ~{ref_fa} \
+      -o ~{cram_filename} \
+      --threads 2 \
+      ~{bam}
+
+    samtools index \
+      -@ 4 \
+      ~{cram_filename}
+  >>>
+
+  output {
+    File cram = "~{cram_filename}"
+    File crai = "~{cram_filename}.crai"
+  }
+
+  runtime {
+    docker: docker
+    memory: "3.5 GB"
+    cpu: 2
+    disks: "local-disk " + disk_gb + " HDD"
+    preemptible: 5
+  }
+}
