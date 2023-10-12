@@ -1,3 +1,0 @@
-for brand in SeqCap SureSelectv4 nextera; do
-bedtools sort -g ./tools/hg38.txt -i ./hg38_intervals/${brand}_targets.bed > ./hg38_intervals/${brand}_sorted.bed
-done;
