@@ -1,6 +1,6 @@
 version development
 
-workflow CalculatePRS {
+workflow PlinkScore {
     input {
     	String cohortName
         File plinkBed
@@ -11,7 +11,7 @@ workflow CalculatePRS {
         Array[File]+ pgsFiles
     }
 
-    call plinkPRS {
+    call plinkScore {
         input:
           base = cohortName,
           bed = plinkBed,
@@ -24,14 +24,14 @@ workflow CalculatePRS {
 
     output {
         String cohort = cohortName
-        Directory arrays = plinkPRS.arrays
-        Array[File] scores = plinkPRS.profiles
-        Array[File] nopreds = plinkPRS.nopreds
-        Array[File] nosex = plinkPRS.nosex
+        Directory arrays = plinkScore.arrays
+        Array[File] scores = plinkScore.profiles
+        Array[File] nopreds = plinkScore.nopreds
+        Array[File] nosex = plinkScore.nosex
     }
 }
 
-task plinkPRS {
+task plinkScore {
     input {
         String base
         File bed
