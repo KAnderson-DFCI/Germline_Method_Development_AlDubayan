@@ -8,7 +8,7 @@ workflow PlinkPCA {
         File plinkFam
     }
 
-    call plinkScore {
+    call plinkPCA {
         input:
           base = cohortName,
           bed = plinkBed,
@@ -17,9 +17,9 @@ workflow PlinkPCA {
     }
 
     output {
-        PCs = plinkPCA.PCs
-        eigenvalues = plinkPCA.eigenvalues
-        variantWeights = plinkPCA.variantWeights
+        File PCs = plinkPCA.PCs
+        File eigenvalues = plinkPCA.eigenvalues
+        File variantWeights = plinkPCA.variantWeights
     }
 }
 
@@ -30,27 +30,31 @@ task plinkPCA {
         File bim
         File fam
 
-        Int pcs = 20
+        Int pcs = 10
         String flags = ""
 
         Int memory = 256
-        Int cpus = 8
+        Int cpus = 16
         Int preemptible = 3
     }
 
     Int diskSpace = ceil(2 * size(bed, 'Gi'))
+    Int plinkMem = ceil(0.95 * memory * 1024)
 
     command <<<
-      plink \
+    
+      plink2 \
       --bfile ~{base} \
-      --pca ~{pcs} header tabs var-wts\ 
+      --bed ~{bed} --bim ~{bim} --fam ~{fam} \
+      --pca allele-wts ~{pcs} vzs vcols=+pos \
+      --memory ~{plinkMem} \
       ~{flags}
     >>>
 
     output {
         File PCs = "{base}.eigenvec"
         File eigenvalues = "{base}.eigenval"
-        File variantWeights = "{base}.eigenvec.var"
+        File variantWeights = "{base}.eigenvec.allele"
     }
 
     runtime {
@@ -58,6 +62,6 @@ task plinkPCA {
         memory: "~{memory} GB"
         cpu: cpus
         preemptible: preemptible
-        docker: "quay.io/biocontainers/plink:1.90b6.21--h779adbc_1"
+        docker: "quay.io/biocontainers/plink2:2.00a5--h4ac6f70_0"
     }
 }
