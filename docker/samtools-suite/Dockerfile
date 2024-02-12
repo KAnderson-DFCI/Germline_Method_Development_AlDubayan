@@ -25,8 +25,6 @@ RUN apt-get -qqy update && \
       libcurl4-openssl-dev \
       libssl-dev
 
-RUN mkdir /opt
-
 # Install the suite
 ARG SUITE_VERSION=1.18
 RUN cd /opt/ && \
