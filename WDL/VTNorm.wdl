@@ -24,8 +24,8 @@ workflow VTNorm_Streamed {
         region = regions[i],
         pref = "~{sample_id}.shard_~{i}",
 
-        refFasta = refFasta
-        refFastaIdx = refFastaIdx
+        refFasta = refFasta,
+        refFastaIdx = refFastaIdx,
         refFastaDict = refFastaDict
     }
   }
@@ -38,7 +38,7 @@ workflow VTNorm_Streamed {
 
   output {
     File norm_vcf = concat.vcf
-    File? norm_vcf_idx = concat.vcf.idx
+    File? norm_vcf_idx = concat.vcf_idx
   }
 }
 
@@ -60,6 +60,7 @@ task vtnorm_streamed {
     Int cpu = 9
     Int preemptible = 3
     String vt_bcftools_docker = "kylera/vt:latest"
+    String vt_path = "/opt/vt/vt"
   }
 
   String base = if defined(pref) then pref else sub(basename(remote_vcf_path), "\\.[bv]cf(\\.gz)?^", "")
@@ -79,11 +80,11 @@ task vtnorm_streamed {
       ~{"-r " + region} \
       --threads 3 \
       ~{remote_vcf_path} | \
-    vt decompose + -s -o + | \
-    vt normalize + -r ~{refFasta} | \
+    ~{vt_path} decompose + -s -o + | \
+    ~{vt_path} normalize + -r ~{refFasta} | \
     sed 's/*/-/g' - | \
     bcftools view \
-      -O ~{outFormat} \
+      -O~{outFormat} \
       -o ~{base}.normalized~{suf} \
       --threads 3 \
       --write-index \
