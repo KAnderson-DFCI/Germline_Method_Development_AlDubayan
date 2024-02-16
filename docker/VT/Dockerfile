@@ -1,4 +1,4 @@
-FROM kylera/samtools-suite:latest as base
+FROM kylera/samtools-suite:gcloud as base
 
 RUN apt-get -qqy update --fix-missing && \
     apt-get -qqy install --fix-missing --no-upgrade --no-install-recommends \
