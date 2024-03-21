@@ -4,8 +4,8 @@ import "https://raw.githubusercontent.com/vanallenlab/pancan_germline_wgs/wes_ad
 
 workflow Vep {
   input {
-    Array[File] vcfs
-    Array[File] vcf_idxs
+    File vcf
+    File vcf_idx
 
     Boolean shard_vcfs = true
     Int records_per_shard = 50000
@@ -17,10 +17,6 @@ workflow Vep {
     String bcftools_docker
   }
 
-  scatter ( vcf_info in zip(vcfs, vcf_idxs) ) {
-    File vcf = vcf_info.left
-    File vcf_idx = vcf_info.right
-
     if (shard_vcfs) {
       call Tasks.ShardVcf {
         input:
@@ -30,10 +26,10 @@ workflow Vep {
           bcftools_docker = bcftools_docker
       }
 
-      call Sort as sort_large{
+      call Sort as sort_large {
         input:
-          sort_regex = ".*\\.(\\d{1,})\\.vcf\\.gz" # the previous glob: {out_prefix}.*.vcf.gz
-          table = transpose(ShardVcf.vcf_shards, ShardVcf.vcf_shard_idxs) # column 0 is vcf, column 1 is idx
+          sort_regex = ".*\\.(\\d{1,})\\.vcf\\.gz", # the previous glob: {out_prefix}.*.vcf.gz
+          table = transpose([ShardVcf.vcf_shards, ShardVcf.vcf_shard_idxs]) # column 0 is vcf, column 1 is idx
       }
 
       scatter ( shard_info in sort_large.sorted_table ) {
@@ -54,17 +50,18 @@ workflow Vep {
 
         call Sort as sort_fine {
           input:
-            sort_regex = ".*\\.(\\d{1,})\\.vcf\\.gz" # the previous glob: {out_prefix}.*.vcf.gz
+            sort_regex = ".*\\.(\\d{1,})\\.vcf\\.gz", # the previous glob: {out_prefix}.*.vcf.gz
                             # this also inherits from the previous name, so its important
                             #   the file extensions are handled properly by the shard task
-            table = transpose(ShardVcfByRegion.vcf_shards, ShardVcfByRegion.vcf_shard_idxs)
+            table = transpose([ShardVcfByRegion.vcf_shards, ShardVcfByRegion.vcf_shard_idxs])
         }
       }
 
       Array[File] vcf_fine_shards = flatten(ShardVcfByRegion.vcf_shards)
       Array[File] vcf_fine_shard_idxs = flatten(ShardVcfByRegion.vcf_shard_idxs)
     }
-    
+  
+  output {
     Array[File] vcf_shards = select_first([vcf_fine_shards, [vcf]])
     Array[File] vcf_shard_idxs = select_first([vcf_fine_shard_idxs, [vcf_idx]])
   }
@@ -82,7 +79,7 @@ task Sort {
   
   File tsv = write_tsv(table)
   
-  Int memGb = ceil(2.5 * size(tsv, 'Gi'))
+  Int memGB = ceil(2.5 * size(tsv, 'Gi'))
   Int diskSize = memGB
   
   command <<<
@@ -96,7 +93,7 @@ task Sort {
     
     sorted_table = sorted(table, key=
       lambda x: int(
-        re.search('~{index_re}', x[~{on_column}] )[1]
+        re.search('~{sort_regex}', x[~{on_column}] )[1]
       )
     )
 
