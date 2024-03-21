@@ -1,33 +1,132 @@
-from firecloud import fiss
-import hail as hl
+import sys
+from os.path import basename
+import re
+
+from joblib import dump, load
 
 import pandas as pd
 import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import cross_val_score
 
-import matplotlib.pyplot as plt
-from matplotlib.pyplot import figure
-import seaborn
-
-# initialize hail
+import hail as hl
 hl.init()
 
 
+# TODO make configurable
+nPCs = 15
+def PCcols(n):
+    return [f'PC{i}' for i in range(1, n+1)]
+
 # inputs
-ref_name = "1KG"
-ref_vcf = "gs://fc-e4808678-a557-43c2-b46e-20385d5c64f0/0f2fdd10-7168-'4d73-94ce-b55475827599/VT_Decomp/e9cf326c-c7b9-4d26-b0c1-7f4270adc4d2/call-VTRecal/Jul2021_1000g_3202_WGS_DV_merged.vt2_normalized_spanning_alleles.vcf.gz"
-ref_clinical_info = "gs://fc-86adf333-cc1a-4027-9e69-fd0433d63d1c/hg38_references/supercohort_combined_with_info.txt"
+def run(args):
+    if args[0] == '--build-reference':
+        refvcf, refpoptsv = args[1:3]
+        build_reference(refvcf, refpoptsv)
+    elif args[0] == '--infer-samples':
+        samplevcf, refloadingsfile, refRFdump = args[1:4]
+        infer_samples(samplevcf, refloadingsfile, refRFdump)
+    elif args[0] == '--build-and-infer':
+        samplevcf, refvcf, refpoptsv = args[1:4]
+        ref_loadings_ht, rf = build_reference(refvcf, refpoptsv)
+        infer_samples(samplevcf, ref_loadings_ht, rf, need_load=False)
+    else:
+        print("Invalid paramters") #TODO make better instructions.
 
 
-ref_mt = hl.import_vcf(ref_vcf, n_partitions=200, reference_genome='GRCh38', force_bgz=True, array_elements_required=False)
-merged_mt = ref_mt.annotate_entries(GT = hl.if_else(hl.is_defined(ref_mt.GT), ref_mt.GT, hl.Call([0, 0])))
+## build reference projection
+# needs reference vcf, reference populations
+def build_reference(refvcf, refpoptsv):
+    # hail can't take '.bcf' files anyway, but let's keep it portable
+    refbase = re.sub("\.[bv]cf\.gz", "", basename(refvcf))
+    
+    # perform pca
+    ref_mt = hl.import_vcf(refvcf, force_bgz=refvcf.endswith('.gz'), reference_genome="GRCh38") #TODO make ref configurable
+    ref_mt = prep_mt_pca(ref_mt) # atomizing should help with garbage collection
+    _, ref_pcs_ht, ref_loadings_ht = hl.hwe_normalized_pca(ref_mt.GT, k=nPCs, compute_loadings=True)
+    
+    # annotate loadings with allele frequencies
+    ref_mt = ref_mt.annotate_rows(af = hl.agg.mean(ref_mt.GT.n_alt_alleles()) / 2)                
+    ref_loadings_ht = ref_loadings_ht.annotate(af=ref_mt.rows()[ref_loadings_ht.key].af)         
 
-# filters
-filtered_mt = hl.variant_qc(ref_mt)
-filtered_mt = filtered_mt.filter_rows(filtered_mt.variant_qc.AF[1] > 0.01) # Rare variant filter
-filtered_mt = filtered_mt.filter_rows(filtered_mt.variant_qc.p_value_hwe > 1e-6) # Hardy-Weinberg Equilibrium filter
-variants_after_pruning = hl.ld_prune(filtered_mt.GT, r2=0.1)   # Pruning 
-filtered_mt = filtered_mt.filter_rows(hl.is_defined(variants_after_pruning[filtered_mt.row_key]))
+    ### output loadings for reuse
+    ref_loadings_ht.write(f'{refbase}.loadings.ht') #TODO this needs to be output locally, not in hadoop, for terra delocalization
 
-print(filtered_mt.count())
+    PCs = PCcols(nPCs)
+    # prepare model data
+    ref_data = ref_pcs_ht.to_pandas()
+    ref_data.set_index('s', inplace=True)
+    ref_data.index.name = 'Sample'
+    ref_data = ref_data['scores'].apply(lambda x: pd.Series(x, index = PCs))
 
-pca_eigenvalues, pca_scores, _ = hl.hwe_normalized_pca(filtered_mt.GT)
+    ref_pops = pd.read_csv(refpoptsv, sep='\t', index_col=[0]) # TODO Make population column configurable?
+    ref_data['Population'] = ref_pops.loc[ref_data.index]
+
+    ### output pca with populations for inspection
+    ref_data.to_csv(f'{refbase}.pca_pop.tsv')
+
+    # train random forest
+    tX = ref_data[PCs]
+    ty = ref_data['Population']
+    rf = RandomForestClassifier()
+    rf_cvscores = cross_val_score(rf, tX, ty, cv=5)
+    print(rf_cvscores) # emit for inspection
+    rf.fit(tX, ty)
+
+    ### save random forest model for reuse
+    dump(f'{refbase}.pop_sklearn_rf.joblib')
+
+    return ref_loadings_ht, rf
+
+#TODO come up with elegant configuration input
+def prep_mt_pca(mt, aft=0.01, hwe_pt=1e-6, ld_r2=0.1):
+    print("Filtering", mt.count(), 'variants.')
+
+    # missing calls > ref
+    filled_gt = hl.if_else(hl.is_defined(mt.GT), mt.GT, hl.Call([0, 0]))
+    mt = mt.annotate_entries(GT=filled_gt)
+    mt = hl.variant_qc(mt)
+
+    # remove rare variants
+    mt = mt.filter_rows(mt.variant_qc.AF[1] > aft)   
+    
+    # remove variants out of hardy weinberg equilibrium
+    mt = mt.filter_rows(mt.variant_qc.p_value_hwe > hwe_pt)
+
+    # remove variants in linkage disequilibrium
+    ld_keep = hl.ld_prune(mt.GT, r2=ld_r2)
+    mt = mt.filter_rows(hl.isdefined(ld_keep[mt.row_key]))
+    
+    print(mt.count(), 'variants remaining.')
+    return mt
+
+
+def infer_samples(samplevcf, refloadings, refRF, need_load=True):
+    samplebase = re.sub("\.[bv]cf\.gz", "", basename(samplevcf))
+
+    if need_load:
+        ref_loadings_ht = hl.read_table(refloadings)
+        rf = load(refRF)
+    else:
+        ref_loadings_ht = refloadings
+        rf = refRF
+
+    if rf.n_features_in_ != nPCs: #TODO compare rf to loadings length for PC number, overriding nPCs
+        print(f"Random Forest designed for {rf.n_features_in_} PCs, but script configured for {nPCs}.")
+
+    sample_mt = hl.import_vcf(samplevcf, force_bgz=samplevcf.endswith('.gz'), reference_genome='GRCh38') #TODO configurate
+
+    # project samples using reference loadings
+    sample_pcs_ht = hl.experimental.pc_project(sample_mt.GT, ref_loadings_ht.loadings, ref_loadings_ht.af)
+
+    PCs = PCcols(nPCs)
+    # prepare model data
+    sample_data = sample_pcs_ht.to_pandas()
+    sample_data.set_index('s', inplace=True)
+    sample_data.index.name = 'Sample'
+    sample_data = sample_data['scores'].apply(lambda x: pd.Series(x, index=PCs))
+
+    sample_data['Population'] = rf.predict(sample_data[PCs])
+    
+    ### Output results
+    sample_data.to_csv(f'{samplebase}.pca_pop.tsv', sep='\t')
