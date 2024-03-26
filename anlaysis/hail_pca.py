@@ -74,11 +74,14 @@ def PCcols(n):
 # inputs
 def run(args):
     global config
-    config = vars(clap.parse_args(sys.argv[1:]))
-    if config['bucket'] == "None":
+    config = vars(clap.parse_args(args))
+    if config['bucket'] == None:
         print("No cloud bucket specified, hail files may be lost (including reference pc variant loadings)")
+        config['bucket'] = "."
 
     hl.init(tmp_dir=join(config['bucket'], 'hail', 'tmp'))
+
+    
 
     if config['proc'] == 'build-reference':
         ref_loadings_ht, rf = build_reference(config['reference-vcf'], config['population-tsv'], config['pop_col'])
@@ -183,3 +186,6 @@ def infer_samples(samplevcf, refloadings, refRF, need_load=True):
     
     ### Output results
     sample_data.to_csv(f'{samplebase}.pca_pop.tsv', sep='\t')
+
+if __name__ == "__main__":
+    run(sys.argv[1:])
