@@ -20,6 +20,8 @@ clap.add_argument('-r', '--reference', default='GRCh38', choices=['GRCh37', 'GRC
                   help='the (hail-supported) reference genome of the samples')
 clap.add_argument('-b', '--bucket', default=os.environ.get('WORKSPACE_BUCKET', None),
                   help='cloud bucket prefix to use for saving hail files')
+clap.add_argument('--spark-conf', default="spark.executor.memory=2g",
+                  help='spark configuration options as <option>=<value>')
 clasp = clap.add_subparsers(required=True, metavar='', dest='proc',
                             description='Reference and Sample Operations')
 
@@ -79,9 +81,12 @@ def run(args):
         print("No cloud bucket specified, hail files may be lost (including reference pc variant loadings)")
         config['bucket'] = "."
 
-    hl.init(tmp_dir=join(config['bucket'], 'hail', 'tmp'))
+    sconf = dict(pair.split('=') for pair in config['spark_conf'].split())
+    hl.init(tmp_dir=join(config['bucket'], 'hail', 'tmp'), spark_conf=sconf)
 
-    
+    spark_conf = hl.spark_context().getConf().getAll()
+    sc_tree = branchy_tree(spark_conf)
+    display_tree(sc_tree)
 
     if config['proc'] == 'build-reference':
         ref_loadings_ht, rf = build_reference(config['reference-vcf'], config['population-tsv'], config['pop_col'])
@@ -96,7 +101,8 @@ def build_reference(refvcf, refpoptsv, pop_col):
     refbase = re.sub("\.[bv]cf\.gz", "", basename(refvcf))
     
     # perform pca
-    ref_mt = hl.import_vcf(refvcf, force_bgz=refvcf.endswith('.gz'), reference_genome=config['reference'])
+    ref_mt = hl.import_vcf(refvcf, force_bgz=refvcf.endswith('.gz'), reference_genome=config['reference'],
+                           array_elements_required=False)
     ref_mt = prep_mt_pca(ref_mt, config['af_min'], config['hwe_p'], config['ld_r2']) # atomizing should help with garbage collection
     _, ref_pcs_ht, ref_loadings_ht = hl.hwe_normalized_pca(ref_mt.GT, k=config['k'], compute_loadings=True)
     
@@ -105,7 +111,8 @@ def build_reference(refvcf, refpoptsv, pop_col):
     ref_loadings_ht = ref_loadings_ht.annotate(af=ref_mt.rows()[ref_loadings_ht.key].af)         
 
     ### output loadings for reuse
-    ref_loadings_ht.write(join(config['bucket'], 'hail', f'{refbase}.loadings.ht'))
+    ref_loadings_ht.write(join(config['bucket'], 'hail', f'{refbase}.loadings.ht'),
+                          overwrite=True)
 
     PCs = PCcols(config['k'])
     # prepare model data
@@ -129,7 +136,7 @@ def build_reference(refvcf, refpoptsv, pop_col):
     rf.fit(tX, ty)
 
     ### save random forest model for reuse
-    dump(f'{refbase}.pop_rf.sklearn.joblib')
+    dump(rf, f'{refbase}.pop_rf.sklearn.joblib')
 
     return ref_loadings_ht, rf
 
@@ -150,7 +157,7 @@ def prep_mt_pca(mt, aft=0.01, hwe_pt=1e-6, ld_r2=0.1):
 
     # remove variants in linkage disequilibrium
     ld_keep = hl.ld_prune(mt.GT, r2=ld_r2)
-    mt = mt.filter_rows(hl.isdefined(ld_keep[mt.row_key]))
+    mt = mt.filter_rows(hl.is_defined(ld_keep[mt.row_key]))
     
     print(mt.count(), 'variants remaining.')
     return mt
@@ -175,17 +182,58 @@ def infer_samples(samplevcf, refloadings, refRF, need_load=True):
     # project samples using reference loadings
     sample_pcs_ht = hl.experimental.pc_project(sample_mt.GT, ref_loadings_ht.loadings, ref_loadings_ht.af)
 
-    PCs = PCcols(config['k'])
+    PCs = PCcols(nL)
     # prepare model data
     sample_data = sample_pcs_ht.to_pandas()
     sample_data.set_index('s', inplace=True)
     sample_data.index.name = 'Sample'
     sample_data = sample_data['scores'].apply(lambda x: pd.Series(x, index=PCs))
-
     sample_data['Population'] = rf.predict(sample_data[PCs])
     
     ### Output results
     sample_data.to_csv(f'{samplebase}.pca_pop.tsv', sep='\t')
+
+
+### Utilities
+def branchy_tree(paths, prefix=""):
+    if len(paths) == 1: return {paths[0][0]: paths[0][1]}
+    
+    # find greatest common prefix
+    ps = paths[0][0].split('.')
+    gcp = ""
+    i = 0
+
+    while i < len(ps):
+        ncp = gcp + ps[i]
+
+        if all(p.startswith(ncp) for p, q in paths):
+            gcp = ncp + "."
+            i += 1
+        else:
+            break
+
+    if i == len(ps):
+        raise ValueError(f'Non-unique path encountered: {ncp}')
+
+    tree = dict()
+    paths = [(p.removeprefix(gcp), q) for p, q in paths]
+    while len(paths) > 0:
+        apre = paths[0][0].split('.')[0]
+        agrp = [p for p in paths if p[0].startswith(apre)]
+        for a in agrp: paths.remove(a)
+
+        tree |= branchy_tree(agrp, gcp)
+        
+    return {gcp[:-1]: tree}
+
+def display_tree(tree, i=0):
+    for k, v in tree.items():
+        print(" |"*i + "-" + str(k), end='')
+        if type(v) == dict:
+            print()
+            display_tree(v, i+1)
+        else:
+            print(" = " + str(v))
 
 if __name__ == "__main__":
     run(sys.argv[1:])
