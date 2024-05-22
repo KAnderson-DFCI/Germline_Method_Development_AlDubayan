@@ -261,10 +261,7 @@ getWorkspaces()
 nbWorkspace = None
 if 'WORKSPACE_NAMESPACE' in os.environ and \
    'WORKSPACE_NAME' in os.environ:
-    nbWorkspace = Workspace(
-        os.environ['WORKSPACE_NAMESPACE'],
-        os.environ['WORKSPACE_NAME'],
-        os.environ['WORKSPACE_BUCKET'])
+    nbWorkspace = Workspace(os.environ['WORKSPACE_NAME'])
     print('Discovered Environemnt Workspace:', nbWorkspace.name)
     print("Exposed in module variable 'nbWorkspace'")
 
