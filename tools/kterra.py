@@ -11,6 +11,7 @@
 #   ii. `pip install firecloud`
 
 import os, sys
+from posixpath import join, relpath
 from collections import defaultdict as ddict
 from collections.abc import Mapping
 
@@ -148,8 +149,8 @@ class Workspace:
             return
         
         blobs = self.gbucket.list_blobs(prefix=prefix, delimiter=delimiter, match_glob=glob)
-        files = set(b.name for b in blobs)
-        folders = set(blobs.prefixes)
+        files = set(relpath(b.name, prefix) for b in blobs)
+        folders = set(relpath(b, prefix) for b in blobs.prefixes)
         return files, folders
 
     def listSubmissions(self, fields='brief', fmap=None):
@@ -165,23 +166,30 @@ class Workspace:
                 'submissionRoot',
                 'submissionEntity.entityName']
             if not fmap:
-                fmap = key_ep
+                fmap = lambda x: key_ep(x).removeprefix('submission')
         
         table = tabulate(self.last_request.json(), fields)
         table.set_index('submissionId', inplace=True)
         if 'submissionDate' in table.columns:
             table['submissionDate'] = pd.to_datetime(table['submissionDate'])
+            table.sort_values(by="submissionDate", ascending=False, inplace=True)
+        if 'submissionRoot' in table.columns:
+            data = table['submissionRoot']
+            data = [relpath(d, join('gs://', self.bucket)) + '/' for d in data]
+            table['submissionRoot'] = data
         if fmap:
             table.rename(columns=fmap, inplace=True)
-        
+            table.index.name = fmap(table.index.name)
         return table
+    
+    
 
 
 #######################################################
 ### Methods for analyzing and converting firecloud json
 
 # list of dicts to table
-def tabulate(dlist, fields=None, fmap=None, tmap=None):
+def tabulate(dlist, fields=None, fmap=None, tmap=None, delim='.'):
     '''
       Converts a list of nested dictionaries into a table.
         Each top-level dictionary in the list becomes a row.
@@ -193,37 +201,37 @@ def tabulate(dlist, fields=None, fmap=None, tmap=None):
       fmap: used to change field names in post
     '''
     if fields is None:
-        fields = agg_keys(dlist)
+        fields = agg_keys(dlist, delim=delim)
     
     by_field = ddict(list)
     for d in dlist:
         for f in fields:
-            by_field[f].append(navkey(d, f))
+            by_field[f].append(navkey(d, f, delim=delim))
 
     df = pd.DataFrame(by_field)
     if fmap: df.rename(columns=fmap, inplace=True)
     return df
 
-def key_ep(k):
-    return k.split('.')[-1]
+def key_ep(k, delim='.'):
+    return k.split(delim)[-1]
 
-def navkey(d, k):
-    a, _, b = k.partition('.')
+def navkey(d, k, delim='.'):
+    a, _, b = k.partition(delim)
     if a not in d: return np.nan
     if not b: return d[a]
-    return navkey(d[a], b)
+    return navkey(d[a], b, delim=delim)
 
-def agg_keys(dlist):
+def agg_keys(dlist, delim='.'):
     keys = set()
     for d in dlist:
-        keys |= flatten(d)
+        keys |= flatten(d, delim=delim)
     return keys
     
-def flatten(d, prefix=""):
+def flatten(d, prefix="", delim='.'):
     keys = set()
     for k in d:
         if isinstance(d[k], Mapping):
-            keys |= flatten(d[k], prefix=prefix+k+".")
+            keys |= flatten(d[k], prefix=prefix+k+delim, delim=delim)
         else:
             keys.add(prefix + k)
     return keys
