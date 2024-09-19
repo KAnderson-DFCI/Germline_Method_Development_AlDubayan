@@ -176,8 +176,6 @@ class Workspace:
         
         return table
 
-        
-
 
 #######################################################
 ### Methods for analyzing and converting firecloud json
@@ -254,6 +252,7 @@ nbWorkspace = None
 if 'WORKSPACE_NAMESPACE' in os.environ and \
    'WORKSPACE_NAME' in os.environ:
     nbWorkspace = Workspace(os.environ['WORKSPACE_NAME'])
-    print('Discovered Environemnt Workspace:', nbWorkspace.name)
-    print("Exposed in module variable 'nbWorkspace'")
+    print('kterra:')
+    print('  Discovered Environemnt Workspace:', nbWorkspace.name)
+    print("  Exposed in module variable 'nbWorkspace'")
 
