@@ -19,6 +19,17 @@ workflow VCFStatsStreamed {
   }
 }
 
+mins = dict()
+maxi = dict()
+for datum in table:
+  xrm = datum[1]
+  low = datum[2]
+  high = datum[3]
+  if not xrm in mins: mins[xrm] = 10e9
+  if not xrm in maxi: maxi[xrm] = 0
+  if int(low) < mins[xrm]: mins[xrm] = int(low)
+  if int(high) > maxi[xrm]: maxi[xrm] = int(high)
+
 task vcf_stats_streamed {
   input {
     String remote_vcf_path
