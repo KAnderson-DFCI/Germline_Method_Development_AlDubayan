@@ -103,7 +103,6 @@ class BucketFolder():
     
     def list_files(self, prefix='', delimiter='/', glob=''):
         prefix = self.join(prefix)
-        print(prefix)
         blobs = self.gbucket.list_blobs(prefix=prefix, delimiter=delimiter, match_glob=glob)
         files = set(relpath(b.name, prefix) for b in blobs)
         folders = set(relpath(b, prefix) for b in blobs.prefixes)
@@ -289,13 +288,10 @@ class Workflow():
         self.sub = sub
         self.id = id
 
-        req = self.get_metadata(exclude_key=['calls', 'workflowProcessingEvents',
+        raw_data = self.get_metadata(exclude_key=['calls', 'workflowProcessingEvents',
                                              'inputs', 'outputs', 'labels',
                                              'submittedFiles'])
-        if check_request(req):
-            raise KeyError(f'Workflow {id} not found in submission.')
         
-        raw_data = req.json()
         raw_data.pop('calls', None) # because it still likes to include an empty dict
         raw_data.pop('id')
 
@@ -320,7 +316,7 @@ class Workflow():
             include_key, exclude_key)
         
         if check_request(self.last_request):
-            return None
+            raise KeyError(f'Workflow {id} not found in submission.')
         
         return self.last_request.json()
     
