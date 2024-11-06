@@ -11,16 +11,16 @@ WORKDIR /opt/
 RUN apt-get update && apt-get install -y build-essential libbz2-dev libcurl4-openssl-dev autoconf libssl-dev wget zlib1g-dev liblzma-dev libdeflate-dev git
 
 # Download and build boost program_options and iostreams
-RUN wget https://boostorg.jfrog.io/artifactory/main/release/1.78.0/source/boost_1_78_0.tar.gz && \
-    tar -xf boost_1_78_0.tar.gz && \
-    rm boost_1_78_0.tar.gz && \
-    cd boost_1_78_0/ && \
+RUN wget https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.gz && \
+    tar -xf boost_1_86_0.tar.gz && \
+    rm boost_1_86_0.tar.gz && \
+    cd boost_1_86_0/ && \
     ./bootstrap.sh --with-libraries=iostreams,program_options,serialization --prefix=../boost && \
     ./b2 install && \
     cd .. && \
     cp boost/lib/libboost_iostreams.a boost/lib/libboost_program_options.a boost/lib/libboost_serialization.a /usr/local/lib/ && \
     cp -r boost/include/boost/ /usr/include/ && \
-    rm -r boost_1_78_0 boost
+    rm -r boost_1_86_0 boost
 
 
 RUN git clone https://github.com/odelaneau/GLIMPSE.git GLIMPSE && \
