@@ -82,7 +82,10 @@ def run(args):
         config['bucket'] = "."
 
     sconf = dict(pair.split('=') for pair in config['spark_conf'].split())
-    hl.init(tmp_dir=join(config['bucket'], 'hail', 'tmp'), spark_conf=sconf)
+    hl.init(app_name='PCA-RF',
+            quiet=True,
+            tmp_dir=join(config['bucket'], 'hail', 'tmp'),
+            spark_conf=sconf)
 
     spark_conf = hl.spark_context().getConf().getAll()
     sc_tree = branchy_tree(spark_conf)
