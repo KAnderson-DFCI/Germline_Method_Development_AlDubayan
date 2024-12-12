@@ -5,3 +5,4 @@ sample_level/gene_list/outputs/*
 *.db
 *.vcf
 *.vcf.gz
+*.tsv

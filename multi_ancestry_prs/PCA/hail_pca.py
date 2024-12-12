@@ -264,7 +264,7 @@ def prep_df_rf(pcs_ht: hl.Table, refpoptsv, pop_col, k=5):
     df['Population'] = ref_pops.loc[df.index]
 
     stamp('Writing to csv')
-    df.to_csv(f'{config['filebase']}.pca_pop.tsv')
+    df.to_csv(f"{config['filebase']}.pca_pop.tsv")
     return df
 
 def make_rf_model(df: pd.DataFrame, k=5):
@@ -278,7 +278,7 @@ def make_rf_model(df: pd.DataFrame, k=5):
     rf_cvscores = cross_val_score(rf, tX, ty, cv=5)
 
     stamp('Saving trained model; cv scores: ' + ' '.join(['{:.3f}']*5).format(*rf_cvscores))
-    dump(rf, f'{config['filebase']}.pop_rf.sklearn.joblib')
+    dump(rf, f"{config['filebase']}.pop_rf.sklearn.joblib")
 
     return rf
 
@@ -302,7 +302,7 @@ def resume(stages):
 
 def stamp(message, fulltime=False):
     ct = datetime.now()
-    td = format_td(config['start'] - td)
+    td = format_td(config['start'] - ct)
 
     if not fulltime:
         print(ct.strftime(timeformat),
@@ -322,8 +322,8 @@ def display_spark_config(to=None):
     if to is None:
         display_tree(sc_tree)
         return
-    with open(to, 'w') as out:
-        display_tree(sc_tree, to)
+    with hlfs.open(to, 'w') as out:
+        display_tree(sc_tree, to=out)
 
 def branchy_tree(paths, prefix=""):
     if len(paths) == 1: return {paths[0][0]: paths[0][1]}
