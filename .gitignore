@@ -4,3 +4,8 @@ sample_level/gene_list/outputs/*
 terra_table/submission_table/FastqToCram_sub1249.tsv
 terra_table/submission_table/subm_failed.tsv
 */__pycache__/
+*.db
+*.vcf
+*.vcf.gz
+*.bcf
+*.bcf.gz
