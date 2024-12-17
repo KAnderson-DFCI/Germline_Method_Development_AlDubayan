@@ -1,8 +1,11 @@
+locals.cfg
 terra_table/PC_sample_list/*
 sample_level/gene_list/lists/*
 sample_level/gene_list/outputs/*
 */__pycache__/
 *.db
+*.tsv
 *.vcf
 *.vcf.gz
-*.tsv
+*.bcf
+*.bcf.gz
