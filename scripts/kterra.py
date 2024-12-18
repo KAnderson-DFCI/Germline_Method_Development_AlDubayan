@@ -141,12 +141,30 @@ class Workspace:
 
         self.project = wsdata.namespace
         self.bucket = wsdata.bucketName
+
+        self.load_atts()
         self.folder = None
         if gproject:
             if gproject == 'same': gproject = self.project
             gclient = clients[gproject]
             self.folder = BucketFolder(gclient.get_bucket(self.bucket), '')
+    
+    def load_atts(self):
+        self.last_request = fcl.get_workspace(self.project, self.name, fields=('workspace, workspace.attributes'))
+        if self.check_request():
+            return
+        
+        data = self.last_request.json()
+        self.attr_table = tabulate_fcattrs([data['workspace']])
+        keys = self.attr_table.columns
+        self.reference_keys = set(k for k in keys if k.startswith("referenceData_"))
+        self.system_keys = set(k for k in keys if k.startswith("system:"))
+        self.data_keys = (set(keys) - self.reference_keys) - self.system_keys
 
+        data['workspace'].pop('attributes')
+        data['workspace'].pop('name')
+        self.metadata = data
+    
     def setGProject(self, gproject):
         gclient = clients[gproject]
         self.folder = BucketFolder(gclient.get_bucket(self.bucket), '')
@@ -156,33 +174,22 @@ class Workspace:
 
     # Firecloud
     ## Tables and Entities
+
+    def list_tables(self):
+        self.last_request = fcl.list_entity_types(self.project, self.name)
+        if self.check_request(): return None
+        tables = self.last_request.json()
+        return list(tables.keys())
+
     def get_table(self, tab):
         self.last_request = fcl.get_entities(self.project, self.name, tab)
         if self.check_request(): return None
         entities = self.last_request.json()
         
-        transf = ddict(list)
-        
-        keys = set()
-        for e in entities:
-            keys |= e['attributes'].keys()
-        
-        for e in entities:
-            transf['id'].append(e['name'])
-            for k in keys:
-                if k not in e['attributes']:
-                    transf[k].append(None)
-                    continue
-                v = e['attributes'][k]
-                if type(v) == dict: # arrays are nested
-                    v = v['items'] # so v is a list
-                    if type(v[0]) == dict: # entity references are nested _again_
-                        v = [d['entityName'] for d in v]
-                transf[k].append(v)
-
-        dm = pd.DataFrame(transf)
-        dm.set_index('id', inplace=True)
-        return dm
+        table = tabulate_fcattrs(entities)
+        table.set_index('name', inplace=True)
+        table.index.name = 'id'
+        return table
     
     def update_entity(self, tab, ent, **attr_val):
         req = []
@@ -196,7 +203,18 @@ class Workspace:
                 "addUpdateAttribute": val
             })
         self.last_request = fcl.update_entity(self.project, self.name, tab, ent, req)
-        self.check_request()
+        return self.check_request()
+
+
+    def get_workspace_data(self):
+        return self.attr_table[list(self.data_keys)]
+    
+    def get_system_data(self):
+        return self.attr_table[list(self.system_keys)]
+    
+    def get_reference_data(self):
+        return self.attr_table[list(self.reference_keys)]
+
 
     ## Submissions
     def list_submissions(self, fields='brief', fmap=None):
@@ -333,24 +351,48 @@ def check_request(req):
     if req.status_code != 200:
         print('Bad Request:',
                 req.status_code,
-                req.reason)
+                req.reason,
+                req.content)
         return True
     return False
 
+def tabulate_fcattrs(dlist: list[dict], fields=None, fmap=None, delim='.'):
+    '''
+      First eliminates itemsType nesting for lists and entity references,
+      then tabulates normally.
+    '''
+    flatter = []
+    for i, listing in enumerate(dlist):
+        new_listing = {}
+        new_listing['name'] = listing.get('name', i)
+
+        atts = listing['attributes']
+        for k in atts:
+            v = atts[k]
+            if type(v) == dict and ('items' in v): # lists and entity references
+                v = v['items'] # now v is a list
+                if type(v[0]) == dict: # entity references
+                    v = [d['entityName'] for d in v]
+            new_listing[k] = v
+        flatter.append(new_listing)
+    return tabulate(flatter, fields, fmap, delim, 0)
+
 # list of dicts to table
-def tabulate(dlist, fields=None, fmap=None, tmap=None, delim='.'):
+def tabulate(dlist: list[dict], fields=None, fmap=None, delim='.', max_depth=None):
     '''
       Converts a list of nested dictionaries into a table.
         Each top-level dictionary in the list becomes a row.
-        The nesting is flattened by concatenating keys with '.'.
-        All keys and values are retained,
-        with np.nan for missing values.
-
-      fields: used to filter fields,
-      fmap: used to change field names in post
+        The nesting is flattened by concatenating child keys recursively.
+        All keys and values are retained by default,
+        with np.nan for missing values in rows.
+      
+      fields: list of keys to retain,
+      fmap: dict to change field names in post
+      delim: key concat delimiter
+      max_depth: levels to unnest
     '''
     if fields is None:
-        fields = agg_keys(dlist, delim=delim)
+        fields = agg_keys(dlist, delim=delim, max_depth=max_depth)
     
     by_field = ddict(list)
     for d in dlist:
@@ -370,17 +412,20 @@ def navkey(d, k, delim='.'):
     if not b: return d[a]
     return navkey(d[a], b, delim=delim)
 
-def agg_keys(dlist, delim='.'):
+def agg_keys(dlist, delim='.', max_depth=None):
     keys = set()
     for d in dlist:
-        keys |= flatten(d, delim=delim)
+        keys |= flatten(d, delim=delim, max_depth=max_depth)
     return keys
     
-def flatten(d, prefix="", delim='.'):
+def flatten(d, prefix="", delim='.', _depth=0, max_depth=None):
+    if (max_depth is not None) and _depth >= max_depth:
+        return set(prefix+k for k in d)
+    
     keys = set()
     for k in d:
         if isinstance(d[k], Mapping):
-            keys |= flatten(d[k], prefix=prefix+k+delim, delim=delim)
+            keys |= flatten(d[k], prefix+k+delim, delim, _depth+1, max_depth)
         else:
             keys.add(prefix + k)
     return keys
