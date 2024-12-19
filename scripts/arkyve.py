@@ -77,7 +77,7 @@ class WorkspaceMigrator():
     sample = next(v for v in val)
     if not isinstance(sample, str):
       if isinstance(sample, Sequence):
-        raise ValueError("Nested Arrays are not Supported")
+        raise ValueError(f"Nested Arrays are not Supported; {table}, {ent}, {col}")
       return None
     
     # val is not a string, is a sequence, and a sample element is a string

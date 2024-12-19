@@ -371,7 +371,9 @@ def tabulate_fcattrs(dlist: list[dict], fields=None, fmap=None, delim='.'):
             v = atts[k]
             if type(v) == dict and ('items' in v): # lists and entity references
                 v = v['items'] # now v is a list
-                if type(v[0]) == dict: # entity references
+                if len(v) == 0:
+                    v = None
+                elif type(v[0]) == dict: # entity references
                     v = [d['entityName'] for d in v]
             new_listing[k] = v
         flatter.append(new_listing)
