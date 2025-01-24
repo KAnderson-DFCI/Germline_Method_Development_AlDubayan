@@ -17,53 +17,59 @@ import hailtop.fs as hlfs
 
 
 ### Arguments
-clap = ArgumentParser(prog="Hail PCA wrapper",
-                      description="Convenience wrapper for performing hail PCA")
-clap.add_argument('-r', '--reference', default='GRCh38', choices=['GRCh37', 'GRCh38', 'GRCm38', 'CanFam3'],
-                  help='the (hail-supported) reference genome of the samples')
-clap.add_argument('-b', '--bucket', default=os.environ.get('WORKSPACE_BUCKET', None),
-                  help='cloud bucket prefix to use for saving hail files')
-clap.add_argument('--spark-conf', default="spark.executor.memory=2g",
-                  help='spark configuration options as <option>=<value>')
-clasp = clap.add_subparsers(required=True, metavar='', dest='proc',
-                            description='Reference and Sample Operations')
+def make_argparse():
+    clap = ArgumentParser(prog="Hail PCA wrapper",
+                        description="Convenience wrapper for performing hail PCA")
+    clap.add_argument('-r', '--reference', default='GRCh38', choices=['GRCh37', 'GRCh38', 'GRCm38', 'CanFam3'],
+                    help='the (hail-supported) reference genome of the samples')
+    clap.add_argument('-b', '--bucket', default=os.environ.get('WORKSPACE_BUCKET', None),
+                    help='cloud bucket prefix to use for saving hail files')
+    clap.add_argument('--spark-conf', default="spark.executor.memory=2g",
+                    help='spark configuration options as <option>=<value>')
+    clasp = clap.add_subparsers(required=True, metavar='', dest='proc',
+                                description='Reference and Sample Operations')
 
-# Arguments for building the reference projcetion
-buildref_clap = clasp.add_parser('build-reference',
-                                 help="build reference PC projection and ancestry Random-Forest")
+    # Arguments for building the reference projcetion
+    buildref_clap = clasp.add_parser('build-reference',
+                                    help="build reference PC projection and ancestry Random-Forest")
 
-file1_args = buildref_clap.add_argument_group('Files')
-file1_args.add_argument('reference-vcf',
-                        help='reference cohort VCF')
-file1_args.add_argument('population-tsv',
-                        help='reference sample population assignments, must have: header, all samples in reference-vcf')
-file1_args.add_argument('-s', '--samples',
-                        help='sample vcf, if supplied will be projected and ancestry-inferred')
+    file1_args = buildref_clap.add_argument_group('Files')
+    file1_args.add_argument('reference-vcf',
+                            help='reference cohort VCF')
+    file1_args.add_argument('population-tsv',
+                            help='reference sample population assignments, must have: header, all samples in reference-vcf')
+    file1_args.add_argument('-s', '--sample-vcf',
+                            help='sample vcf, if supplied will have ancestry inferred; supersedes -S')
+    file1_args.add_argument('-S', '--vcf-list', action='store_true',
+                            help='flag, if provided `--sample-vcf` will be interpreted as a text file listing vcf file names, one per line, to process')
 
-buildref_clap.add_argument('-c', '--pop-col', required=True, type=int,
-                           help='column with population class in population-tsv')
+    buildref_clap.add_argument('-c', '--pop-col', required=True, type=int,
+                            help='column with population class in population-tsv')
 
-pca_args = buildref_clap.add_argument_group('PCA')
-pca_args.add_argument('-k', default=10, type=int,
-                      help='number of PCs to calculate')
-pca_args.add_argument('--af-min', default=0.01, type=float,
-                      help='minimum allele-frequency filter')
-pca_args.add_argument('--hwe-p', default=1e-6, type=float,
-                      help='Hardy-Weinberg p-value filter')
-pca_args.add_argument('--ld-r2', default=0.1, type=float,
-                      help='linkage disequilibrium correlation filter')
+    pca_args = buildref_clap.add_argument_group('PCA')
+    pca_args.add_argument('-k', default=10, type=int,
+                        help='number of PCs to calculate')
+    pca_args.add_argument('--af-min', default=0.01, type=float,
+                        help='minimum allele-frequency filter')
+    pca_args.add_argument('--hwe-p', default=1e-6, type=float,
+                        help='Hardy-Weinberg p-value filter')
+    pca_args.add_argument('--ld-r2', default=0.1, type=float,
+                        help='linkage disequilibrium correlation filter')
 
-# Arguments for projecting and inferring a sample set
-infer_clap = clasp.add_parser('infer-samples',
-                              help='project samples and infer ancestries using premade reference')
+    # Arguments for projecting and inferring a sample set
+    infer_clap = clasp.add_parser('infer-samples',
+                                help='project samples and infer ancestries using premade reference')
 
-file2_args = infer_clap.add_argument_group('Files')
-file2_args.add_argument('sample-vcf',
-                        help='sample cohort VCF')
-file2_args.add_argument('refloadings',
-                        help='Hail table with reference pc loadings and afs, (note: cannot read from local file system)')
-file2_args.add_argument('refRFmodel',
-                        help='joblib dump of a sklearn RandomForestClassifier trained on reference PCs -> population class')
+    file2_args = infer_clap.add_argument_group('Files')
+    file2_args.add_argument('sample-vcf',
+                            help='sample cohort VCF')
+    file2_args.add_argument('refloadings',
+                            help='Hail table with reference pc loadings and afs, (note: cannot read from local file system)')
+    file2_args.add_argument('refRFmodel',
+                            help='joblib dump of a sklearn RandomForestClassifier trained on reference PCs -> population class')
+    file2_args.add_argument('-S', '--vcf-list', action='store_true',
+                            help='if provided, `sample-vcf` will be interpreted as a text file listing vcf file names, one per line, to process')
+    return clap
 
 # Defaults for interactive usage
 config = {
@@ -88,6 +94,7 @@ timeformat = '%H:%M:%S'
 def run(args):
     global config
 
+    clap = make_argparse()
     config = vars(clap.parse_args(args))
     if config['bucket'] == None:
         print("!! No cloud bucket specified, hail files may be lost (including reference pc variant loadings)")
@@ -104,10 +111,13 @@ def run(args):
 
     if config['proc'] == 'build-reference':
         ref_loadings_ht, rf = build_reference(config['reference-vcf'], config['population-tsv'], config['pop_col'])
-        if config['samples'] != None:
-            infer_samples(config['samples'], ref_loadings_ht, rf, need_load=False)
+        if config['sample_vcf'] != None:
+            infer_samples(config['sample_vcf'], ref_loadings_ht, rf, vcf_list=config['vcf_list'])
     elif config['proc'] == 'infer-samples':
-        infer_samples(config['sample-vcf'], config['refloadings'], config['refRFmodel'])
+        ref_loadings_ht, rf = load_models(config['refloadings'], config['refRFmodel'])
+        infer_samples(config['sample-vcf'], ref_loadings_ht, rf, vcf_list=config['vcf_list'])
+    
+    stamp('Done! bye-bye ☻')
 
 ### Pipelines
 def build_reference(refvcf, refpoptsv, pop_col):
@@ -146,35 +156,44 @@ def build_reference(refvcf, refpoptsv, pop_col):
     return loadings_ht, rf
 
 
-def infer_samples(samplevcf, refloadings, refRF, need_load=True):
+def infer_samples(samplevcf, ref_loadings_ht: hl.Table, rf: RandomForestClassifier, vcf_list=False):
+    if vcf_list:
+        stamp('Reading sample vcf list')
+        listbase = splitext(basename(samplevcf))[0]
+        with open(samplevcf) as inp:
+            vcfs = [v.strip() for v in inp.readlines() if len(v)]
+        
+        parts = []
+        for vcf in vcfs:
+            parts.append(infer_samples(vcf, ref_loadings_ht, rf))
+        
+        stamp('Combining and writing full result set')
+        full_df = pd.concat(parts)
+        full_df.to_csv(f'{listbase}.all.pca_pop.tsv', sep='\t')
+        stamp('All vcfs complete')
+        return full_df
+
+    stamp(f'Beginning sample inference on {samplevcf}', True)
     samplebase = re.sub("\.[bv]cf\.gz", "", basename(samplevcf))
-
-    if need_load:
-        ref_loadings_ht = hl.read_table(refloadings)
-        rf = load(refRF)
-    else:
-        ref_loadings_ht = refloadings
-        rf = refRF
-
-    if rf.n_features_in_ != (nL := len(ref_loadings_ht.loadings.take(1)[0])):
-        print(f"Number of Random Forest PC features {rf.n_features_in_} disagrees with number in reference loadings {nL}.", file=sys.stderr)
-        sys.exit(1)
-
     sample_mt = hl.import_vcf(samplevcf, force_bgz=samplevcf.endswith('.gz'), reference_genome=config['reference'])
 
-    # project samples using reference loadings
+    stamp('Projecting samples with reference weights...')
     sample_pcs_ht = hl.experimental.pc_project(sample_mt.GT, ref_loadings_ht.loadings, ref_loadings_ht.af)
 
-    PCs = PCcols(nL)
-    # prepare model data
+    stamp('Preparing RandomForest input')
+    PCs = PCcols(rf.n_features_in_)
     sample_data = sample_pcs_ht.to_pandas()
     sample_data.set_index('s', inplace=True)
     sample_data.index.name = 'Sample'
     sample_data = sample_data['scores'].apply(lambda x: pd.Series(x, index=PCs))
+
+    stamp('Shaking trees')
     sample_data['Population'] = rf.predict(sample_data[PCs])
     
-    ### Output results
+    stamp('Writing result')
     sample_data.to_csv(f'{samplebase}.pca_pop.tsv', sep='\t')
+    stamp('Sample ancestry inference complete')
+    return sample_data
 
 
 ### Atomization
@@ -283,6 +302,16 @@ def make_rf_model(df: pd.DataFrame, k=5):
 
     return rf
 
+def load_models(refloadings, refRF):
+    stamp(f'Loading referencing weights from {refloadings}')
+    ref_loadings_ht = hl.read_table(refloadings)
+    rf: RandomForestClassifier = load(refRF)
+
+    if rf.n_features_in_ != (nL := len(ref_loadings_ht.loadings.take(1)[0])):
+        print(f"Number of Random Forest PC features {rf.n_features_in_} disagrees with number in reference loadings {nL}.", file=sys.stderr)
+        sys.exit(1)
+    
+    return ref_loadings_ht, rf
 
 ### Utilities
 def PCcols(n):

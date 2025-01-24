@@ -1,0 +1,27 @@
+running {
+  color: #ceb211;
+  font-style: italic;
+}
+
+quick {
+  color:#48d326;
+}
+
+prio {
+  color: #fd7f00;
+  font-weight: bold;
+}
+
+babr {
+  color: #777777;
+  font-style: italic;
+}
+
+done {
+  color: #a55ad1;
+  text-decoration: line-through;
+}
+
+extern {
+  color: #7e2929;
+}
