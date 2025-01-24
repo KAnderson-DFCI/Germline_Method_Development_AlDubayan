@@ -179,11 +179,11 @@ def infer_samples(samplevcf, refloadings, refRF, need_load=True):
 
 ### Atomization
 def write_to(rfn, oh: hlo):
-    stamp('Writing result to {rfn}')
+    stamp(f'Writing result to {rfn}')
     oh.write(rfn)
 
 def read_from(rfn) -> hlo:
-    stamp('Reading stored result from {rfn}')
+    stamp(f'Reading stored result from {rfn}')
     _, ext = splitext(rfn)
     return file_readers[ext](rfn)
 
@@ -239,7 +239,7 @@ def prep_mt_pca(mt: hl.MatrixTable, aft=0.01, hwe_pt=1e-6, ld_r2=0.1):
     stamp('Calculating AFs')
     mt = mt.annotate_rows(af = hl.agg.mean(mt.GT.n_alt_alleles()) / 2)
 
-    stamp(mt.count(), 'variants remaining')
+    stamp(f'{mt.count()} variants remaining')
     return mt
 
 @stage
@@ -276,8 +276,9 @@ def make_rf_model(df: pd.DataFrame, k=5):
     stamp('Training model')
     rf = RandomForestClassifier()
     rf_cvscores = cross_val_score(rf, tX, ty, cv=5)
-
-    stamp('Saving trained model; cv scores: ' + ' '.join(['{:.3f}']*5).format(*rf_cvscores))
+    stamp('Cross Validation: '+ ' '.join(['{:.3f}']*5).format(*rf_cvscores))
+    rf.fit(tX, ty)
+    stamp('Saving trained model')
     dump(rf, f"{config['filebase']}.pop_rf.sklearn.joblib")
 
     return rf
@@ -300,16 +301,16 @@ def resume(stages):
             break
     return i-1
 
-def stamp(message, fulltime=False):
+def stamp(*message, fulltime=False):
     ct = datetime.now()
     td = format_td(config['start'] - ct)
 
     if not fulltime:
         print(ct.strftime(timeformat),
-              f'({td}) {message}')
+              f'({td})', *message)
     else:
         print(ct.strftime(datetimeformat))
-        print('  ' + message)
+        print('  ', *message)
 
 def format_td(td: timedelta):
     s = int(td.total_seconds())
