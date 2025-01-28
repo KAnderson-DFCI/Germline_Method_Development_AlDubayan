@@ -194,8 +194,14 @@ class Workspace:
     def update_entity(self, tab, ent, **attr_val):
         req = []
         for attr, val in attr_val.items():
+            if type(val) == ReferenceList:
+                val = reflist(val.entity_list, val.entity_type)
+
             if type(val) == list:
                 val = attlist(val)
+
+            if type(val) == JSONEntry:
+                val = val.value
         
             req.append({
                 "op": "AddUpdateAttribute",
@@ -356,9 +362,31 @@ def check_request(req):
         return True
     return False
 
+class JSONEntry():
+    def __init__(self, value):
+        self.value = value
+
+    def __str__(self):
+        return f'JSONEntry({self.value})'
+    
+    def __repr__(self):
+        return f'JSONEntry({self.value})'
+    
+class ReferenceList():
+    def __init__(self, et, el):
+        self.entity_type = et
+        self.entity_list = el
+
+    def __str__(self):
+        return f'ReferenceList({self.entity_type}, {self.entity_list})'
+    
+    def __repr__(self):
+        return f'ReferenceList({self.entity_type}, {self.entity_list})'
+
 def tabulate_fcattrs(dlist: list[dict], fields=None, fmap=None, delim='.'):
     '''
-      First eliminates itemsType nesting for lists and entity references,
+      First eliminates itemsType nesting for lists and entity references
+      while wrapping json entries in a benign object.
       then tabulates normally.
     '''
     flatter = []
@@ -369,12 +397,17 @@ def tabulate_fcattrs(dlist: list[dict], fields=None, fmap=None, delim='.'):
         atts = listing['attributes']
         for k in atts:
             v = atts[k]
-            if type(v) == dict and ('items' in v): # lists and entity references
-                v = v['items'] # now v is a list
-                if len(v) == 0:
-                    v = None
-                elif type(v[0]) == dict: # entity references
-                    v = [d['entityName'] for d in v]
+            if type(v) == dict:
+                if 'items' in v: # proper lists and entity references
+                    v = v['items'] # now v is a list
+                    if len(v) == 0:
+                        v = None
+                    elif type(v[0]) == dict: # entity references
+                        v = ReferenceList(v[0]['entityType'], [d['entityName'] for d in v])
+                else: # a json object
+                    v = JSONEntry(v)
+            elif type(v) == list: # also json object
+                v = JSONEntry(v)
             new_listing[k] = v
         flatter.append(new_listing)
     return tabulate(flatter, fields, fmap, delim, 0)
@@ -393,6 +426,7 @@ def tabulate(dlist: list[dict], fields=None, fmap=None, delim='.', max_depth=Non
       delim: key concat delimiter
       max_depth: levels to unnest
     '''
+
     if fields is None:
         fields = agg_keys(dlist, delim=delim, max_depth=max_depth)
     
