@@ -7,6 +7,11 @@ quick {
   color:#48d326;
 }
 
+no {
+  color:#a50000;
+  text-decoration: line-through;
+}
+
 prio {
   color: #fd7f00;
   font-weight: bold;

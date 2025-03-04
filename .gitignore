@@ -5,7 +5,12 @@ sample_level/gene_list/outputs/*
 */__pycache__/
 *.db
 *.tsv
+*.csv
 *.vcf
 *.vcf.gz
 *.bcf
 *.bcf.gz
+*.svg
+archiving/inspection/*
+archiving/migration/*
+misc_analyses/vqc*
