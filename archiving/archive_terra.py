@@ -31,8 +31,8 @@ def overline(*args):
 ### Migration Management
 class WorkspaceMigrator:
 
-  def __init__(self, gproj: str, wsn: str, akn: str):
-    self.gclient = Client(gproj)
+  def __init__(self, wsn: str, akn: str):
+    self.gclient = Client()
 
     self.ws = Workspace(wsn)
     self.wsbucket = self.gclient.bucket(self.ws.bucket)
@@ -41,7 +41,6 @@ class WorkspaceMigrator:
     self.akpref = posixpath.join("gs://", self.akbucket.name) + "/"
 
     self.connection_info = (
-      self.gclient.project,
       self.wsbucket.name,
       self.akbucket.name,
     )
@@ -319,9 +318,9 @@ dest_bucket = None
 dest_pref = None
 
 
-def setup_connections(gproject, sbn, dbn):
+def setup_connections(sbn, dbn):
   global gclient, srce_bucket, srce_pref, dest_bucket, dest_pref
-  gclient = Client(gproject)
+  gclient = Client()
   srce_bucket = gclient.bucket(sbn)
   srce_pref = posixpath.join("gs://", sbn) + "/"
   dest_bucket = gclient.bucket(dbn)
@@ -662,11 +661,11 @@ def flatten(d, prefix="", delim=".", _depth=0, max_depth=None):
 
 
 ### Pipelines
-def migrate_workspace(gproj, wsn, akn, n=4):
+def migrate_workspace(wsn, akn, n=4):
   where = join("migration", wsn)
   makedirs(where, exist_ok=True)
 
-  migrator = WorkspaceMigrator(gproj, wsn, akn)
+  migrator = WorkspaceMigrator(wsn, akn)
   migrator.plan_migration()
 
   json_dump(migrator.entity_updates, join(where, "entity_plan.json"))
@@ -701,13 +700,13 @@ def migrate_workspace(gproj, wsn, akn, n=4):
 
 
 if __name__ == "__main__":
-  if len(sys.argv) < 4:
-    print("Bad Job")
+  if len(sys.argv) < 3:
+    print("Requires at least two arguments; source workspace name and archive bucket name.\nA number of cpus to use may be included as a third argument, default 4.")
     sys.exit()
 
-  gproj, wsn, akn = sys.argv[1:4]
+  wsn, akn = sys.argv[1:3]
   n = 4
-  if len(sys.argv) > 4:
-    n = int(sys.argv[4])
+  if len(sys.argv) > 3:
+    n = int(sys.argv[3])
 
-  migrate_workspace(gproj, wsn, akn, n)
+  migrate_workspace(wsn, akn, n)
