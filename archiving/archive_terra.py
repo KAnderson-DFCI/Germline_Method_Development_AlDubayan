@@ -381,7 +381,7 @@ def list_workspaces():
   fmap = key_ep
 
   last_request = fcl.list_workspaces(",".join(fields))
-  if not check_request(last_request):
+  if check_request(last_request):
     return None
 
   table = tabulate(last_request.json(), fields, fmap)
@@ -478,7 +478,6 @@ class Workspace:
     return self.attr_table[list(self.reference_keys)]
 
 
-fc_workspaces = list_workspaces()
 tworkspace: Workspace = None
 
 
@@ -699,6 +698,7 @@ def migrate_workspace(wsn, akn, n=4):
   return True
 
 
+fc_workspaces = list_workspaces()
 if __name__ == "__main__":
   if len(sys.argv) < 3:
     print("Requires at least two arguments; source workspace name and archive bucket name.\nA number of cpus to use may be included as a third argument, default 4.")
