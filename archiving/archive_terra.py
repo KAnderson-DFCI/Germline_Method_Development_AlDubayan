@@ -31,14 +31,16 @@ def overline(*args):
 ### Migration Management
 class WorkspaceMigrator:
 
-  def __init__(self, wsn: str, akn: str):
+  def __init__(self, wsn: str, akn: str, within=False):
     self.gclient = Client()
 
     self.ws = Workspace(wsn)
     self.wsbucket = self.gclient.bucket(self.ws.bucket)
     self.wspref = posixpath.join("gs://", self.wsbucket.name) + "/"
-    self.akbucket = self.gclient.bucket(akn)
+    self.akbucket = self.wsbucket if within else self.gclient.bucket(akn)
     self.akpref = posixpath.join("gs://", self.akbucket.name) + "/"
+
+    self.inner = within
 
     self.connection_info = (
       self.wsbucket.name,
@@ -158,7 +160,7 @@ class WorkspaceMigrator:
     base = posixpath.basename(val)
     dest = posixpath.join(
       self.akpref,
-      self.ws.name,
+      "ModelData" if self.inner else self.ws.name,
       table,
       ent,
       col,
@@ -664,7 +666,7 @@ def migrate_workspace(wsn, akn, n=4):
   where = join("migration", wsn)
   makedirs(where, exist_ok=True)
 
-  migrator = WorkspaceMigrator(wsn, akn)
+  migrator = WorkspaceMigrator(wsn, akn, akn == "--clean")
   migrator.plan_migration()
 
   json_dump(migrator.entity_updates, join(where, "entity_plan.json"))

@@ -310,10 +310,11 @@ def migrate_bucket_files(wsn, akn, n=4):
   makedirs(where, exist_ok=True)
 
   migrator = BucketMigrator(wsdata.bucketName, akn, wsn)
-  migrator.plan_files([
-      'PreProcessingForVariantDiscovery_GATK4',
-      'FastqToCram',
-    ])
+  if len(migrator.file_map) == 0:
+    migrator.plan_files([
+        'PreProcessingForVariantDiscovery_GATK4',
+        'FastqToCram',
+      ])
 
   counts, problems = migrator.migrate_files(n)
   if counts["E"] != 0:
